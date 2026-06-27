@@ -1,0 +1,294 @@
+================================================================================
+Analysis 3 — Land Use Category Correction & Corrected Within-City Clustering
+Date: 2026-05-03
+================================================================================
+
+--------------------------------------------------------------------------------
+1. Land Use Category 정의 (소스 코드 기반 확인)
+--------------------------------------------------------------------------------
+
+[NYC — 5 categories (NYC PLUTO land use codes grouping)]
+
+  PLUTO 코드 → 카테고리 매핑:
+    '01' One & Two Family Buildings        → cat0  Residential
+    '02' Multi-Family Walk-Up Buildings    → cat0  Residential
+    '03' Multi-Family Elevator Buildings   → cat0  Residential
+    '04' Mixed Residential & Commercial    → cat1  Commercial/Mixed
+    '05' Commercial & Office Buildings     → cat1  Commercial/Mixed
+    '06' Industrial & Manufacturing        → cat2  Industrial
+    '07' Transportation & Utility          → cat3  Transport & Public
+    '08' Public Facilities & Institutions  → cat3  Transport & Public
+    '09' Open Space & Outdoor Recreation   → cat4  Open Space/Vacant
+    '10' Parking Facilities                → cat3  Transport & Public
+    '11' Vacant Land                       → cat4  Open Space/Vacant
+
+  NYC 최종 5 카테고리:
+    cat0: Residential          (01+02+03 — 모든 주거 유형 통합)
+    cat1: Commercial/Mixed     (04+05 — 혼합용도 및 상업/오피스)
+    cat2: Industrial           (06)
+    cat3: Transport & Public   (07+08+10 — 교통, 공공시설, 주차장)
+    cat4: Open Space/Vacant    (09+11 — 공원, 공지)
+
+[Seoul — 11 categories (원본 코드의 commented-out merge_dict 기준)]
+
+  원본 한국어 분류 → 카테고리 인덱스:
+    '녹지 및 오픈스페이스' (Green & Open Space)          → cat0
+    '공공용도지'           (Public Use)                   → cat1
+    '하천 및 호소'         (Rivers & Lakes)               → cat2
+    '특수지역'             (Special Area)                 → cat3
+    '주택지'               (Residential)                  → cat4
+    '상업 및 업무시설지'   (Commercial & Business)        → cat5
+    '도시부양시설지'       (Urban Support Facilities)     → cat6
+    '교통시설지'           (Transportation)               → cat7
+    '나지'                 (Vacant/Bare Land)             → cat8
+    '주거 및 상업혼합지'   (Residential/Commercial Mixed) → cat9
+    '공업지'               (Industrial)                   → cat10
+
+  Seoul 최종 11 카테고리:
+    cat0: Green & Open Space      cat1: Public Use         cat2: Rivers & Lakes
+    cat3: Special Area            cat4: Residential        cat5: Commercial & Business
+    cat6: Urban Support           cat7: Transportation     cat8: Vacant/Bare Land
+    cat9: Res/Comm Mixed          cat10: Industrial
+
+[Singapore — 5 categories (URA Master Plan land use grouping)]
+
+  URA 용도 → 카테고리 매핑:
+    RESIDENTIAL / RESIDENTIAL WITH COMMERCIAL AT 1ST STOREY → cat0  Residential
+    COMMERCIAL / COMMERCIAL & RESIDENTIAL / HOTEL           → cat1  Commercial
+    BUSINESS 1/2/PARK (및 -WHITE 변형)                      → cat2  Industrial
+    ROAD / TRANSPORT FACILITIES / MASS RAPID TRANSIT / LRT  → cat3  Public/Transport/Inst
+    EDUCATIONAL / CIVIC & COMMUNITY / HEALTH / CEMETERY     → cat3  Public/Transport/Inst
+    PLACE OF WORSHIP / COMMERCIAL-INSTITUTION / RES-INST    → cat3  Public/Transport/Inst
+    PORT/AIRPORT / PARK / UTILITY / BEACH / RESERVE SITE    → cat4  Parks/Other
+    WATERBODY / SPECIAL USE / WHITE / OPEN SPACE            → cat4  Parks/Other
+
+  Singapore 최종 5 카테고리:
+    cat0: Residential             (주거)
+    cat1: Commercial              (상업, 호텔 포함)
+    cat2: Industrial              (Business zone — Singapore의 공업지역 명칭)
+    cat3: Public/Transport/Inst   (도로+MRT+교육+의료+종교 등 공공시설 통합)
+    cat4: Parks/Other             (항만+공원+유틸리티+수역 등)
+
+--------------------------------------------------------------------------------
+2. 이전 레이블 오류 이력 및 최종 수정
+--------------------------------------------------------------------------------
+
+[NYC — 수정 이력]
+  1차 임의 할당: ['Residential','Commercial','Industrial','Transport/Util','Open Space']
+    → cat1=Commercial, cat3=Transport/Util: 대체로 맞으나 범위 설명 부족
+  2차 잘못된 수정: cat1→'Residential(High)', cat3→'Commercial'
+    → Upper West Side(cat1 pure) = Mixed Res/Comm(04) 건물 지역으로 'Commercial/Mixed'가 맞음
+  최종 확정: cat1='Commercial/Mixed', cat3='Transport & Public'
+
+[Seoul — 수정 이력]
+  1차 임의 할당: ['Residential-1','Residential-2','Commercial','Industrial',
+                   'Green-1','Green-2','Special','Mixed','Tourism','Transport','Utility']
+    → cat0를 Residential-1로, cat4를 Green-1로 — 완전히 반대였음
+  소스 코드 확인 후 수정:
+    cat4 = 주택지 (Residential) ← 이전에 'Green-1'로 잘못 표기
+    cat9 = 주거 및 상업혼합지 (Res/Comm Mixed) ← 이전에 'Transport'로 잘못 표기
+    cat0 = 녹지 및 오픈스페이스 (Green & Open Space) ← 이전에 'Residential-1'로 잘못 표기
+
+  이 오류로 인해 이전 분석("Green-1이 지배적인 서울 클러스터")이
+  완전히 반대 해석이었음 → 실제로는 Residential이 지배적
+
+--------------------------------------------------------------------------------
+3. 수정된 Land Use 카테고리 비율
+--------------------------------------------------------------------------------
+
+--- NYC (n=2,312) ---
+
+  ┌──────────────────────┬────────────┬──────────────────────┐
+  │ 카테고리             │ 면적 비율  │ dominant 지역 수 (%) │
+  ├──────────────────────┼────────────┼──────────────────────┤
+  │ Residential          │  59.1%     │ 1,798 (77.8%)        │
+  │ Commercial/Mixed     │  15.1%     │   184 ( 8.0%)        │
+  │ Industrial           │   2.8%     │    47 ( 2.0%)        │
+  │ Transport & Public   │  14.1%     │   149 ( 6.4%)        │
+  │ Open Space/Vacant    │   8.9%     │   134 ( 5.8%)        │
+  └──────────────────────┴────────────┴──────────────────────┘
+
+  → Residential 59.1% + Commercial/Mixed 15.1% = 74.2% (사용자 관찰과 일치)
+  → Transport & Public(14.1%)은 공공시설+교통+주차 합산 수치
+
+--- Seoul (n=426) ---
+
+  ┌──────────────────────────┬────────────┬──────────────────────┐
+  │ 카테고리                 │ 면적 비율  │ dominant 지역 수 (%) │
+  ├──────────────────────────┼────────────┼──────────────────────┤
+  │ cat0: Green & Open Space │  17.9%     │  92 (21.6%)          │
+  │ cat1: Public Use         │   7.0%     │   6 ( 1.4%)          │
+  │ cat2: Rivers & Lakes     │   5.4%     │  24 ( 5.6%)          │
+  │ cat3: Special Area       │   1.0%     │   1 ( 0.2%)          │
+  │ cat4: Residential        │  27.7%     │ 161 (37.8%)  ← 최대  │
+  │ cat5: Commercial&Business│   8.1%     │  18 ( 4.2%)          │
+  │ cat6: Urban Support      │   0.9%     │   4 ( 0.9%)          │
+  │ cat7: Transportation     │  11.4%     │  26 ( 6.1%)          │
+  │ cat8: Vacant/Bare Land   │   2.2%     │   3 ( 0.7%)          │
+  │ cat9: Res/Comm Mixed     │  17.6%     │  88 (20.7%)          │
+  │ cat10: Industrial        │   0.9%     │   3 ( 0.7%)          │
+  └──────────────────────────┴────────────┴──────────────────────┘
+
+  → Residential (cat4) 27.7%: 가장 큰 카테고리, 37.8% 지역에서 dominant
+  → Res/Comm Mixed (cat9) 17.6%: 두 번째로 큰 실질 토지이용
+  → 주거 관련 합산 (cat4+cat9+일부cat0) ≈ 45%+
+  → Green & Open Space (cat0) 17.9%: 서울의 산지/대형공원 포함
+  → 이전 분석 "Green-1 지배" 완전히 잘못된 해석 — 실제로는 Residential 지배
+
+--- Singapore (n=346) ---
+
+  ┌──────────────────────────┬────────────┬──────────────────────┐
+  │ 카테고리                 │ 면적 비율  │ dominant 지역 수 (%) │
+  ├──────────────────────────┼────────────┼──────────────────────┤
+  │ Residential              │  29.8%     │ 151 (43.6%)          │
+  │ Commercial               │   5.7%     │  16 ( 4.6%)          │
+  │ Industrial               │  11.1%     │  42 (12.1%)          │
+  │ Public/Transport/Inst    │  32.7%     │  75 (21.7%)  ← 최대  │
+  │ Parks/Other              │  20.6%     │  62 (17.9%)          │
+  └──────────────────────────┴────────────┴──────────────────────┘
+
+  → Public/Transport/Inst (32.7%): 도시국가 특성, 교통+교육+의료+종교 통합
+  → Residential (29.8%): 두 번째
+
+--------------------------------------------------------------------------------
+4. 수정된 Within-City Clustering 결과
+--------------------------------------------------------------------------------
+
+--- NYC ---
+
+  [Satellite K=3] Sil=0.235  pop_range=4,765
+    C0 (n=1,296): pop=16,339  [Residential:59%, Commercial/Mixed:16%]
+    C1 (n=  244): pop=20,929  [Residential:50%, Transport & Public:19%] — 공공시설 밀집 고밀도
+    C2 (n=  772): pop=16,164  [Residential:62%, Transport & Public:14%]
+
+  [Satellite K=5] Sil=0.203  pop_range=10,633
+    C0 (n=  333): pop=12,641  [Residential:58%, Open Space/Vacant:15%] — 공원/외곽 저밀도
+    C1 (n=  744): pop=14,297  [Residential:67%, Commercial/Mixed:11%]
+    C2 (n=  614): pop=16,232  [Residential:61%, Transport & Public:14%]
+    C3 (n=  163): pop=20,174  [Residential:50%, Transport & Public:18%] — 공공시설 고밀도
+    C4 (n=  458): pop=23,274  [Residential:48%, Commercial/Mixed:25%]  — 상업혼합 최고밀도
+
+  [POI K=3] Sil=0.329  pop_range=583
+    C0 (n=1,048): pop=16,895  [Residential:60%, Transport & Public:15%]
+    C1 (n=  618): pop=16,359  [Residential:66%, Transport & Public:12%]
+    C2 (n=  646): pop=16,942  [Residential:51%, Commercial/Mixed:21%] — 상업혼합 지역
+
+  [POI K=5] Sil=0.281  pop_range=14,332
+    C0 (n=  793): pop=16,553  [Residential:59%, Transport & Public:15%]
+    C1 (n=  265): pop=15,721  [Residential:66%, Transport & Public:13%]
+    C2 (n=   70): pop= 4,524  [Residential:55%, Open Space/Vacant:25%]  — 공원/공지 극저밀도
+    C3 (n=  552): pop=18,857  [Residential:51%, Commercial/Mixed:24%]  — 상업혼합 고밀도
+    C4 (n=  632): pop=16,997  [Residential:64%, Transport & Public:13%]
+
+  NYC 해석:
+    Satellite K=5: C4 (Commercial/Mixed 25%) = 최고밀도 23,274 → 상업혼합지가 밀도와 정비례
+                   C0 (Open Space 15%)        = 최저밀도 12,641 → 공원/외곽 분리 성공
+    POI K=5:       C2 (Open Space 25%)        = 극저밀도 4,524  → POI가 공원지역 더 명확히 분리
+                   C3 (Commercial/Mixed 24%)  = 18,857 → 상업 혼합 고밀도 포착
+
+--- Seoul (수정 후 완전히 다른 해석) ---
+
+  [Satellite K=3] Sil=0.190  pop_range=13,107
+    C0 (n=124): pop=23,362  [Residential:27%, Res/Comm Mixed:23%, Green&OpenSp:12%]
+    C1 (n=182): pop=27,743  [Residential:30%, Res/Comm Mixed:22%, Green&OpenSp:12%] — 최고밀도
+    C2 (n=120): pop=14,636  [Green&OpenSp:32%, Residential:25%, Transportation:10%] — 저밀도
+
+  [Satellite K=5] Sil=0.159  pop_range=18,527
+    C0 (n= 57): pop=14,796  [Residential:27%, Rivers&Lakes:19%, Green&OpenSp:17%]
+    C1 (n=113): pop=29,377  [Residential:30%, Res/Comm Mixed:24%, Transportation:13%] — 최고밀도
+    C2 (n=109): pop=23,759  [Residential:26%, Res/Comm Mixed:24%, Green&OpenSp:12%]
+    C3 (n= 37): pop=10,850  [Green&OpenSp:57%, Residential:20%, Res/Comm Mixed:7%]  — 최저밀도 녹지
+    C4 (n=110): pop=23,167  [Residential:30%, Green&OpenSp:23%, Res/Comm Mixed:16%]
+
+  [POI K=3] Sil=0.300  pop_range=8,086
+    C0 (n= 79): pop=17,653  [Green&OpenSp:29%, Residential:24%, Transportation:12%]
+    C1 (n=192): pop=22,492  [Residential:28%, Green&OpenSp:19%, Res/Comm Mixed:16%]
+    C2 (n=155): pop=25,739  [Residential:29%, Res/Comm Mixed:23%, Transportation:13%] — 고밀도
+
+  [POI K=5] Sil=0.295  pop_range=12,991
+    C0 (n= 72): pop=27,152  [Residential:30%, Res/Comm Mixed:22%, Green&OpenSp:18%] — 최고밀도
+    C1 (n= 88): pop=26,069  [Residential:27%, Res/Comm Mixed:27%, Commercial&Bus:14%]
+    C2 (n= 33): pop=14,161  [Green&OpenSp:36%, Residential:22%, Transportation:10%]  — 저밀도 녹지
+    C3 (n=105): pop=23,140  [Residential:28%, Res/Comm Mixed:17%, Green&OpenSp:14%]
+    C4 (n=128): pop=19,972  [Residential:28%, Green&OpenSp:24%, Res/Comm Mixed:12%]
+
+  Seoul 수정된 해석:
+    [이전 해석과의 차이]
+    이전: "Green-1과 Transport가 모든 클러스터에서 공통 배경"
+    수정: Residential(cat4)과 Res/Comm Mixed(cat9)이 모든 고밀도 클러스터 지배
+
+    [핵심 패턴]
+    고밀도 클러스터 (pop>22,000): Residential + Res/Comm Mixed가 40-55% 차지
+    저밀도 클러스터 (pop<15,000): Green & Open Space가 32-57% → 산지/공원 지역
+    POI K=5 C1 (pop=26,069): Commercial & Business 14% 추가 → 상업지역 포함 고밀도
+
+    [Satellite vs POI 차이]
+    Satellite K=5: Green & Open Space 57%인 C3 (pop=10,850) 분리 — 강북 산지 근처 저밀도
+    POI K=5: Rivers & Lakes 비율이 없음 → POI는 수계를 기능적으로 인식 못함
+    Satellite이 Seoul의 지형적 특성(녹지/하천)을 더 잘 포착
+
+--- Singapore ---
+
+  [Satellite K=3] Sil=0.267  pop_range=16,642
+    C0 (n=171): pop=16,642  [Residential:33%, Public/Transport/Inst:31%]
+    C1 (n=171): pop= 8,501  [Public/Transport/Inst:35%, Residential:28%]
+    C2 (n=  4): pop=     0  [Parks/Other:100%] — 공원/외곽 소규모 이상치
+
+  [POI K=3] Sil=0.396  pop_range=9,308
+    C0 (n= 95): pop=15,134  [Residential:41%, Public/Transport/Inst:33%]
+    C1 (n=193): pop=13,077  [Public/Transport/Inst:35%, Residential:29%]
+    C2 (n= 58): pop= 5,826  [Parks/Other:53%, Public/Transport/Inst:23%] — 공원 저밀도
+
+  [POI K=5] Sil=0.332  pop_range=13,705
+    C0 (n=141): pop=13,493  [Public/Transport/Inst:35%, Residential:31%]
+    C1 (n= 96): pop=16,287  [Residential:42%, Public/Transport/Inst:32%] — 최고밀도
+    C2 (n= 37): pop= 2,582  [Parks/Other:71%, Public/Transport/Inst:16%] — 공원 극저밀도
+    C3 (n=  6): pop= 3,038  [Public/Transport/Inst:40%, Parks/Other:29%]
+    C4 (n= 66): pop=10,903  [Public/Transport/Inst:38%, Residential:26%]
+
+  Singapore 해석:
+    - POI K=3 Sil=0.396: 세 도시 중 최고 within-city 구분력
+    - C2 (Parks/Other 53%): pop=5,826 → 공원/비거주 지역 명확 분리
+    - Public/Transport/Inst이 모든 클러스터에서 30%+ → Singapore 공공인프라 밀도
+    - Commercial (5.7%)은 독립 클러스터 미형성
+
+--------------------------------------------------------------------------------
+5. 종합 해석 (수정)
+--------------------------------------------------------------------------------
+
+[Satellite vs POI — 도시별 유용성 비교 (재해석)]
+
+  Silhouette (K=3 기준):
+    NYC:  POI 0.329 > Sat 0.235  (이전 분석과 동일)
+    Seoul: POI 0.300 > Sat 0.190  (이전과 동일)
+    SG:   POI 0.396 > Sat 0.267  (이전과 동일)
+  → POI > Satellite 결론은 유지됨
+
+  Seoul 구조 재해석:
+    이전: "Green-1+Transport가 Seoul 클러스터의 배경"
+    수정: "Residential+Res/Comm Mixed가 고밀도, Green&OpenSpace가 저밀도 클러스터 특징"
+    → Seoul의 기능 구분 축: 주거/상업 밀집도 vs 녹지/산지 비율
+    → 고밀도 (pop>25,000): Residential+Mixed 50%+, 강남권 고층 아파트+상업 혼재
+    → 저밀도 (pop<15,000): Green&OpenSpace 30-57%, 강북 산지/공원 인접 저층 주거
+
+[Cross-city 관점에서의 함의]
+
+  NYC와 Seoul의 토지이용 구조 비교:
+    NYC: Residential(59%) + Commercial/Mixed(15%) — 상업/주거 명확히 구분
+    Seoul: Residential(27.7%) + Res/Comm Mixed(17.6%) + Green(17.9%) — 혼합 구조
+    → 두 도시 모두 Residential 주도이나, Seoul은 상업-주거 혼합지(cat9)와 녹지가 추가 축
+
+  Singapore:
+    Public/Transport/Inst(32.7%)이 최대 → 다른 두 도시와 근본적으로 다른 구조
+    → cross-city pseudo-positive로 Singapore 지역을 다른 도시와 연결할 때
+      이 인프라 편향을 고려해야 함
+
+--------------------------------------------------------------------------------
+6. 수정된 Figure 목록
+--------------------------------------------------------------------------------
+
+  figures/cluster_landuse_composition.png  — POI K=5 land use 구성 (Seoul 레이블 수정됨)
+  figures/cluster_withincity_sat.png       — within-city satellite clustering (수정됨)
+  figures/cluster_withincity_poi.png       — within-city POI clustering (수정됨)
+
+================================================================================

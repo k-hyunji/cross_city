@@ -1,0 +1,8 @@
+torch>=1.12.0
+numpy
+pandas
+geopandas
+shapely
+scikit-learn
+pyyaml
+tqdm

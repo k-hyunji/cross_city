@@ -1,0 +1,40 @@
+satellite_mode: "npy"
+
+data:
+  data_root: "data"
+  poi_dim: 64
+  sat_dim: 64
+
+model:
+  aggregator: "attention"
+  aggregator_heads: 4
+
+training:
+  epochs: 100
+  batch_size: 32
+  lr: 0.0001
+  weight_decay: 0.0001
+  balanced_sampler: true
+
+  use_clip:        true    # CLIP-like: B×B cross-modal loss (sat rows × poi cols)
+  use_unified_con: false   # Fix 2+4: UnifiedCityCon (2B×2B) — disabled when use_clip=true
+  use_proto:       true    # Fix 8: FunctionalPrototypeLoss
+  lambda_contrast: 1.0
+  lambda_dis:      0.1
+  lambda_align:    1.0     # unused when use_unified_con=true
+  lambda_proto:    0.3     # Fix 8 weight (reduced from 0.5; correct Sinkhorn baseline ~2.77)
+  contrast_temp:   0.07
+  align_threshold: 0.5     # sat_mean cosine sim threshold — city-mean-subtracted space: mean≈0, 0.5 → 8.6% pair rate (~22 pseudo-pos/batch)
+  poi_threshold:   0.0     # poi_region cosine sim threshold — 0.0: sat-only mining (raw POI sim max=0.271, 0.5 never satisfied)
+  align_temp:      0.1     # unused when use_unified_con=true
+  n_prototypes:    16      # Fix 8: number of functional archetypes
+  proto_temp:      0.1     # Fix 8: prototype assignment temperature
+  sinkhorn_iters:  3       # Fix 8: Sinkhorn-Knopp iterations
+
+eval:
+  metrics: ["MAE", "RMSE", "R2"]
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+  save_every: 10

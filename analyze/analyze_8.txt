@@ -1,0 +1,86 @@
+날짜: 2026-05-07
+주제: FunctionalPrototypeLoss 미수렴 진단 및 CrossCitySharedLoss 수정 내용
+
+================================================================================
+1. CrossCitySharedLoss 수정 (적용 완료)
+================================================================================
+
+문제: poi_sim_norm ≈ 0.49 (상수) → combined score ≈ 0.6×sat_sim + 0.196
+  → threshold=0.2 기준 49.6% positive → loss gradient 거의 없음
+
+수정:
+  - poi_sim 항 완전 제거
+  - sat_mean sim만으로 positive 판별
+  - sat_threshold: 0.2(combined) → 0.4(sat only)
+
+예상 positive rate: ~12~15% (~16~19쌍/앵커 기준 16명 Seoul 중)
+검증 (mini batch 16 NYC + 16 Seoul):
+  cross-city pairs: 128쌍 중 positive 16쌍 (12.5%) ← 이전 49.6%에서 개선
+  cross_city loss: 2.455 (의미 있는 값, 이전 3.04에서 상수처럼 고정)
+
+설정 변경:
+  configs/base.yaml:
+    cross_city_min_threshold: 0.2  →  cross_city_sat_threshold: 0.4
+    cross_city_sat_weight: 0.6     →  삭제
+  models/losses.py:
+    CrossCitySharedLoss 재구현 (poi_sh 제거, sat_threshold 기반 hard threshold)
+
+================================================================================
+2. FunctionalPrototypeLoss 미수렴 진단
+================================================================================
+
+현재 상태:
+  val_proto: 2.63 (기준 log(16)=2.77, 감소량 0.14에 불과)
+  K=3 ARI: 0.059 → 프로토타입이 기능적 구조 거의 포착 못함
+
+근본 원인: prototype input이 region_emb[128]
+  region_emb = [sat_shared[32] | sat_spec[32] | poi_shared[32] | poi_spec[32]]
+
+  spec branch (sat_spec, poi_spec)는 within-city diversity 용도로 설계됨.
+  WithinCityVarLoss가 spec를 더욱 city-specific하게 만들면서
+  prototype이 spec 차원에서 도시 내 하위 클러스터를 학습하게 됨.
+
+  결과: K=16 프로토타입이 "NYC 패턴 A, NYC 패턴 B, ... Seoul 패턴 X" 형태로
+  수렴 → cross-city 기능적 archetype(상업지구, 주거지구 등) 미학습.
+
+================================================================================
+3. FunctionalPrototypeLoss 수정 방향 (다음 단계)
+================================================================================
+
+제안: prototype input을 region_shared[32]로 변경
+
+근거:
+  - region_shared는 CLIPSharedCon + CrossCitySharedLoss가 cross-city 구조를
+    강제하는 공간이므로 기능적 공통 패턴을 포착하기 적합
+  - spec branch signal 제거 → city-specific sub-cluster 학습 방지
+  - 32-d 공간에서 K=16이 128-d 대비 더 의미 있는 클러스터 형성 가능
+
+Trade-off:
+  - L_proto gradient가 spec branch에 전달되지 않음
+    → sat_spec_agg, poi_spec_agg는 BGDisLoss만으로 학습
+  - spec branch 학습 압력 감소 가능
+
+대안: K를 줄이기 (16 → 8~12)
+  현재 Seoul 426 regions / K=16 ≈ 26.6 regions/prototype으로 충분하지 않음.
+  K=8이면 Seoul 53.3, NYC 289 regions/prototype으로 더 안정적.
+
+================================================================================
+4. 현재 실험 계획
+================================================================================
+
+sep_agg_4: CrossCitySharedLoss 수정(sat_threshold=0.4) 적용 후 재학습
+  목표:
+    - val_cross_city: 3.04 → 2.0 이하로 감소 확인
+    - val_proto: 2.63 유지 또는 소폭 개선
+    - R²: -0.051 이상
+
+sep_agg_4 결과 확인 후 FunctionalPrototypeLoss 수정 진행.
+
+================================================================================
+5. 전체 미해결 문제 목록 (업데이트)
+================================================================================
+
+(1) CrossCitySharedLoss 미수렴 → 수정 적용, 학습 재실행 예정
+(2) FunctionalPrototypeLoss 미수렴 → 진단 완료, 수정 다음 단계
+(3) Seoul norm_std 0.021 (목표 >0.05) → (1)(2) 해소 후 재평가
+(4) R² -0.051 → (1)(2) 해소 시 개선 기대

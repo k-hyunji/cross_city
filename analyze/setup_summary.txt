@@ -1,0 +1,199 @@
+날짜: 2026-06-25
+주제: cross_city6 프로젝트 데이터셋 / 모델 / 실험환경 통합 정리
+
+================================================================================
+0. 프로젝트 개요
+================================================================================
+
+목표:
+  - Source city (NYC + Seoul) 에서 self-supervised 학습 → Target city (Singapore)
+    zero-shot transfer. 평가는 region-level population density 회귀 (linear probe).
+
+연구 아이디어 출처:
+  - 아키텍처:   SimMMDG (NeurIPS 2023, donghao51/SimMMDG)
+                shared / specific subspace 분리 + diversity 제약.
+  - Satellite:  Google AlphaEarth Foundations (2024, 글로벌 foundation model, 64-d)
+  - POI:        RegionContext (knowledge-computing/regioncontext, 도시별 학습, 64-d)
+
+전체 파이프라인:
+  train.py  →  scripts/extract_embeddings.py  →  scripts/linear_probe.py
+
+================================================================================
+1. 데이터셋
+================================================================================
+
+1.1 도시 / 지역 단위
+  city       | region 단위         | region 수 (pop_gt.csv 기준)
+  ---------------------------------------------------------------
+  nyc        | BoroCT2020 (Census Tract) | 2,325 regions
+  seoul      | ADM_CD (행정동)            |   426 regions
+  singapore  | row_index (subzone)        |   374 regions
+  ---------------------------------------------------------------
+  source = nyc + seoul (총 2,751)
+  target = singapore (374, zero-shot)
+
+1.2 블록그룹 (BG) → Region 매핑
+  - 각 BG 는 좌표를 가지며 (poi_emb['centroid']), region polygon 과 spatial join.
+  - Dataset __getitem__ 은 한 region 에 속하는 모든 BG 의 sat / poi 임베딩을
+    [M, 64] 텐서로 반환 (M 가변).
+  - collate_fn = collate_regions: batching 안함, list[dict] 그대로 반환.
+    → aggregator 가 region 별로 독립 처리.
+
+1.3 파일 레이아웃 (data/{city}/)
+  satellite_emb.npy             [N_bg, 64]  AlphaEarth annual embedding (BG centroid)
+  poi_emb.npy                   dict:
+                                  'morph_emb' [N_bg, 64]  RegionContext POI feature
+                                  'centroid'  [N_bg, 2]    (lon, lat)
+  region.shp / .dbf / .prj ...  region polygon boundaries
+  pop_gt.csv                    region-level population density GT
+  alpha_2024_{city}_mean.geojson   region 별 sat_mean (frozen, SatAlign / CC 용)
+  (singapore) landuse_gt_list.csv  보조 downstream task
+
+1.4 핵심 입력
+  - sat_data: BG 단위 64-d sat embedding (AlphaEarth, frozen)
+  - poi_emb : BG 단위 64-d POI embedding (RegionContext, frozen)
+  - sat_mean: region 단위 64-d sat 평균 (CrossCity positive pair selection 용, frozen)
+  - city_idx: 0=nyc, 1=seoul, (eval) singapore
+
+================================================================================
+2. 모델: DualModalNet  (models/model.py)
+================================================================================
+
+차원: sat=64, poi=64, shared=32, spec=32, region_emb=128
+
+2.1 BG-level projection
+  sat_shared_proj : 64 → 32     (Linear)
+  sat_spec_proj   : 64 → 32     (Linear)
+  poi_shared_proj : 64 → 32     (Linear)
+  poi_spec_proj   : 64 → 32     (Linear)
+
+2.2 Region-level aggregation (use_sep_agg=True)
+  4 branch 별 독립 AttentionAggregator (heads=4):
+    sat_shared_agg, sat_spec_agg, poi_shared_agg, poi_spec_agg
+  각 branch: [M, 32] → [32]
+
+  shared_fusion (MLP):  cat([sat_shared_region, poi_shared_region])[64] → [32]
+                        = region_shared  (CC / CLIPShared / DANN 의 anchor)
+
+  최종:
+    sat_region = cat([sat_shared_region, sat_spec_region])     [64]
+    poi_region = cat([poi_shared_region, poi_spec_region])     [64]
+    region_emb = cat([sat_region, poi_region])                 [128]
+
+2.3 옵션
+  - aggregator = "attention" | "mean"  (default: attention)
+  - use_sep_agg = True 가 표준 (4-branch)
+  - use_adv     : DANN 사용 시 GradReverse(region_shared) → city_classifier
+                  → city_adv_loss (현재 base 는 false)
+
+================================================================================
+3. Loss 구성 (models/losses.py, models/trainer.py)
+================================================================================
+
+L_total = lambda_contrast  * L_clip_shared
+        + lambda_dis       * L_bg_dis
+        + lambda_proto     * L_proto
+        + lambda_cross_city* L_cc_shared
+        + lambda_vicreg    * L_vicreg
+        + lambda_adv       * L_city_adv          (use_adv=True 시)
+
+  CLIPSharedCon (use_clip_shared)
+    - sat_shared_region [32] × poi_shared_region [32] 의 NT-Xent.
+    - within-region positive, between-region negative.
+
+  BGDisLoss (use_dis)
+    - shared 와 spec projection 의 cosine sim → 0 으로 강제.
+    - SimMMDG 의 "orthogonality" 제약.
+
+  FunctionalPrototypeLoss (use_proto)
+    - region_emb 을 16 개 functional archetype prototype 에 할당 (Sinkhorn-Knopp).
+    - balanced clustering 으로 collapse 방지 + diversity.
+
+  CrossCitySharedLoss (use_cross_city)
+    - region_shared [32] 의 cross-city NT-Xent.
+    - positive: sat_mean cosine sim > threshold (default 0.4) 인 다른 도시 region.
+    - denom_mode = "full" | "cross_only"
+        full       : within + cross 모두 분모 (sep_agg_3, 7 사용 — 최고 성능)
+        cross_only : cross-city pair 만 분모 (sep_agg_6, 실패)
+
+  WithinCityVarLoss (use_vicreg, VICReg variance term)
+    - region_emb 의 도시 내 분산이 vicreg_gamma 이하면 패널티.
+    - representation collapse / city clustering 방지.
+
+  CityAdvLoss (use_adv, DANN)
+    - region_shared → GradReverse → city classifier, base 는 비활성.
+
+  (legacy / off)  RegionContrastiveLoss, SatAlignLoss, UnifiedCityCon, CLIPRegionCon
+
+================================================================================
+4. 학습 / 평가 환경
+================================================================================
+
+train.py:
+  python train.py --config configs/<name>.yaml \
+                  --source_cities nyc seoul \
+                  --target_city singapore \
+                  --checkpoint_dir checkpoints/<name>
+
+  - Optimizer : Adam (lr=1e-4, weight_decay=1e-4)
+  - Scheduler : CosineAnnealingLR
+  - Epoch     : 100, batch_size=32 (region 단위)
+  - balanced_sampler=True (nyc/seoul region 수 차이 보정)
+  - validation loss 개선 시 epoch_NNN_best.pt 저장, save_every=10 에 주기 저장
+  - history → {log_dir}/history.json
+
+scripts/extract_embeddings.py:
+  - best checkpoint 로 nyc / seoul / singapore region 임베딩 (128-d) 추출
+  - 출력: embeddings/<name>/{city}_region_emb.npy + region_id.npy
+
+scripts/linear_probe.py:
+  - Source-fit, Target-evaluate Ridge regression on log1p(pop_density)
+  - Metrics: MAE, RMSE, R²
+
+================================================================================
+5. Config 파일 현황 (configs/)
+================================================================================
+
+  base.yaml        — 표준 base (sep_agg_3 와 동일 hyperparams, lambda_cc=0.1, denom=full)
+  base_v1.yaml     — 이전 버전 archive
+  sep_agg_5.yaml   — Option A : use_cross_city=false  (CC loss 완전 제거)
+  sep_agg_6.yaml   — Option B : denom_mode="cross_only"
+  sep_agg_7.yaml   — lambda_cross_city=0.05 (base 의 절반), denom=full
+
+  주요 hyperparam (base.yaml):
+    lambda_contrast=1.0, lambda_dis=0.3, lambda_proto=0.5,
+    lambda_cross_city=0.1, lambda_vicreg=1.0, vicreg_gamma=1.0
+    contrast_temp=0.07, cross_city_temp=0.1, cross_city_sat_threshold=0.4
+    n_prototypes=16, proto_temp=0.1, sinkhorn_iters=3
+
+================================================================================
+6. 실험 결과 요약 (Singapore zero-shot linear probe, pop density)
+================================================================================
+
+  실험명               | 핵심 변경                        | R²       | 비고
+  -----------------------------------------------------------------------------
+  CLIPRegionCon        | legacy (sat_region 64-d con)     | -0.070   | baseline
+  sep_agg_3 + VICReg   | base (cc λ=0.1, denom=full)      | -0.051   | 현재 최고
+  sep_agg_4            | cc_sat_threshold 0.4             | -0.333
+  sep_agg_5 (Option A) | CC off                           | -0.461   | 최저
+  sep_agg_6 (Option B) | denom=cross_only                 | -0.360   | MAE=11,457
+  sep_agg_7            | cc λ=0.05, denom=full            | (예정)   | config 만 준비
+
+핵심 발견:
+  - CC loss 없으면 cross-city 구조 형성 불가 → Singapore transfer 붕괴 (Option A).
+  - denom 에서 within-city 제거하면 city clustering 심화 (Option B).
+  - sep_agg_3 의 full denominator 는 within-city repulsion 으로 VICReg 보완.
+
+================================================================================
+7. 다음 단계 후보 (0507_solution.md 우선순위)
+================================================================================
+
+  1. Solution 0 : SimMMDG 빠진 컴포넌트 복원
+                  (a) Spec diversity loss
+                  (b) Cross-modal translation MLP (sat_shared↔poi_shared)
+  2. Solution 3 : DANN 활성화 (use_adv=true) — region_shared 의 city invariance 강제
+  3. lambda_cross_city sweep 마무리 (sep_agg_7 0.05, 추후 0.02 극단)
+  4. POI 인코더 교체 (RegionContext → ReFound/UrbanCLIP 등 city-agnostic 후보)
+
+  주의: sat 의 city bias 는 AlphaEarth 의 real-signal 이므로 sat backbone 은 유지.
+        POI 의 city bias 는 RegionContext 인코더 artifact 이므로 적극 제거 대상.

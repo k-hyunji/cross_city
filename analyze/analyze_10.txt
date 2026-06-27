@@ -1,0 +1,55 @@
+날짜: 2026-05-07
+주제: 데이터 분포 분석 — POI / Satellite t-SNE (BG 레벨, 2000개/도시)
+
+================================================================================
+1. t-SNE 결과 요약 (파일: analyze/tsne_2x2_raw_vs_sub.png)
+================================================================================
+
+[POI raw]
+  세 도시가 거의 완전히 분리된 공간에 존재.
+  city identity axis가 POI 임베딩에서 지배적.
+
+[POI city-mean subtracted]
+  mean subtraction 후에도 도시별 클러스터가 여전히 남아 있음.
+  NYC(빨강)와 Seoul(파랑)이 좌/우로 분리, Singapore(초록)도 독립 구역.
+  → city-mean만 제거해서는 POI의 도시 분리를 해소하기 어려움.
+
+[Satellite raw]
+  POI보다는 덜하지만 여전히 도시별로 구분됨.
+
+[Satellite city-mean subtracted]
+  세 도시가 상당히 겹침. 중앙 영역에 세 도시가 혼재하고 경계가 모호해짐.
+  sat_mean 기반 cross-city positive mining이 작동할 수 있는 실질적 기반 존재.
+
+================================================================================
+2. 핵심 발견
+================================================================================
+
+POI 공간은 city-mean subtraction 후에도 도시별로 분리.
+Satellite 공간은 mean subtraction 후 실질적으로 겹침.
+
+함의:
+(1) CrossCitySharedLoss에서 poi_sim 제거가 데이터로 확인됨
+    POI shared feature는 아직 city-specific 공간에 있어
+    positive mining 신호로 사용 불가. 제거 방향이 맞음.
+
+(2) sat_mean 기반 positive mining은 올바른 공간(satellite mean-sub)을 보고 있음
+    threshold=0.4가 실제 겹치는 영역을 선택하는지 추가 확인 필요.
+
+(3) POI cross-city alignment는 단순 mean subtraction으로 해결 불가
+    → poi_shared_region이 city-agnostic 표현을 학습하려면
+      더 강한 supervision(CLIPSharedCon)이 필요하거나
+      POI 자체의 city-independent feature engineering 필요.
+
+================================================================================
+3. 다음 분석
+================================================================================
+
+sat_sim 분포 분석:
+  cross-city BG 쌍 전체의 cosine similarity 히스토그램
+  → threshold=0.4가 실제로 의미 있는 유사 지역을 선택하는지
+  → positive pair 품질 직접 확인 (어떤 지역끼리 매칭되는가)
+
+region-level sat_mean sim 분포:
+  BG → region aggregate 후 sat_mean cosine similarity 분포
+  → CrossCitySharedLoss positive pair의 실제 품질 확인

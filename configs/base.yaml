@@ -1,0 +1,56 @@
+satellite_mode: "npy"
+
+data:
+  data_root: "data"
+  poi_dim: 64
+  sat_dim: 64
+
+model:
+  aggregator: "attention"
+  aggregator_heads: 4
+  use_sep_agg: true          # 4 branch-level aggregators (shared/spec × sat/poi)
+  use_adv: false             # DANN adversarial city classifier on region_shared
+  n_cities: 2                # number of source cities (nyc + seoul)
+
+training:
+  epochs: 100
+  batch_size: 32
+  lr: 0.0001
+  weight_decay: 0.0001
+  balanced_sampler: true
+
+  use_clip:         false    # legacy CLIPRegionCon on sat_region[64] — disabled
+  use_unified_con:  false    # legacy UnifiedCityCon — disabled
+  use_clip_shared:  true     # CLIPSharedCon on sat_shared_region[32] × poi_shared_region[32]
+  use_cross_city:   true     # CrossCitySharedLoss on region_shared[32]
+  use_proto:        true     # FunctionalPrototypeLoss
+  use_vicreg:       true     # WithinCityVarLoss — within-city 분산 유지 (붕괴 방지)
+
+  lambda_contrast:  1.0      # weight for CLIPSharedCon
+  lambda_dis:       0.3      # raised from 0.1 — BGDisLoss now reaches region level via sep agg
+  lambda_align:     0.0      # unused
+  lambda_proto:     0.5      # raised from 0.3 — stronger diversity pressure on region_emb
+  lambda_cross_city: 0.1     # reduced from 0.5 — was over-aligning (cross-city sim > within-city)
+  lambda_adv:       0.1      # DANN adversarial weight (active only if use_adv: true)
+  lambda_vicreg:    1.0      # WithinCityVarLoss weight
+  vicreg_gamma:     1.0      # 목표 within-city std (차원별)
+
+  contrast_temp:    0.07     # CLIPSharedCon temperature
+  cross_city_temp:  0.1      # CrossCitySharedLoss temperature
+  cross_city_sat_threshold: 0.4   # sat_mean sim threshold for positive pairs (~15% rate)
+
+  align_threshold:  0.5      # sat_mean threshold — calibrated for city-mean-sub space
+  poi_threshold:    0.0      # legacy — unused when use_clip_shared=true
+  align_temp:       0.1      # legacy — unused
+
+  n_prototypes:     16       # functional archetypes
+  proto_temp:       0.1      # prototype assignment temperature
+  sinkhorn_iters:   3        # Sinkhorn-Knopp iterations
+
+eval:
+  metrics: ["MAE", "RMSE", "R2"]
+
+logging:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+  save_every: 10

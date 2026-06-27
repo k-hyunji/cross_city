@@ -1,0 +1,59 @@
+날짜: 2026-05-07
+주제: Option A/B 실험 결과 및 sep_agg_7 방향 결정
+
+================================================================================
+1. 전체 실험 결과 비교
+================================================================================
+
+  실험                    | use_cross_city | denom_mode  | R²      | MAE
+  ---------------------------------------------------------------------------
+  CLIPRegionCon           | -              | -           | -0.070  | -
+  sep_agg_3 +VICReg       | true  (λ=0.1)  | full        | -0.051  | -    ← 최고
+  sep_agg_4 (cc=0.4)      | true  (λ=0.1)  | full        | -0.333  | -
+  sep_agg_5 (Option A)    | false (λ=0.0)  | -           | -0.461  | 25,405  ← 최저
+  sep_agg_6 (Option B)    | true  (λ=0.1)  | cross_only  | -0.360  | 11,457
+
+================================================================================
+2. Option A/B 결과 해석
+================================================================================
+
+Option A (CC loss 제거):
+  - R²=-0.461로 최저. cross-city alignment signal이 Singapore transfer에 필수임을 확인.
+  - CLIPSharedCon + VICReg만으로는 cross-city 구조 형성 불가.
+
+Option B (denom=cross_only):
+  - R²=-0.360. MAE는 11,457로 크게 개선됐으나 R² 기준 sep_agg_3보다 낮음.
+  - within-city 쌍을 denominator에서 제거하면 오히려 city-domain clustering 경향.
+  - full denominator의 within-city repulsion이 VICReg를 보완하는 역할을 하고 있었음.
+
+핵심 발견:
+  - sep_agg_3의 full denominator가 모순 gradient를 가지면서도 최고 성능을 유지한 이유:
+    within-city negative가 VICReg와 함께 within-city repulsion을 강화,
+    CC loss의 alignment signal과 균형을 이루는 구조였을 가능성.
+  - 문제는 CC loss의 존재/구조가 아니라 lambda=0.1이 약간 과한 것일 수 있음.
+
+================================================================================
+3. 다음 실험: sep_agg_7
+================================================================================
+
+  config: configs/sep_agg_7.yaml
+  변경점: lambda_cross_city 0.1 → 0.05 (sep_agg_3 기준)
+  가설: CC loss의 모순 gradient 영향을 절반으로 줄이면서 alignment signal 유지.
+       sep_agg_3(R²=-0.051)보다 within-city diversity가 더 잘 보존될 것으로 기대.
+  denom_mode: "full" (sep_agg_3과 동일, Option B 실패로 복귀)
+
+================================================================================
+4. 탐색 범위 정리
+================================================================================
+
+  완료:
+    - CC loss 제거 (Option A): 기각
+    - denom=cross_only (Option B): 기각
+    - lambda=0.1 (sep_agg_3): 현재 최고 베이스라인
+
+  진행 중:
+    - lambda=0.05 (sep_agg_7): 실험 예정
+
+  미탐색:
+    - lambda=0.02 (Option C 극단)
+    - vicreg_gamma 상향 (within-city repulsion 강화)

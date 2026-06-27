@@ -1,0 +1,88 @@
+날짜: 2026-05-07
+주제: sat_sim 분포 분석 — cross-city positive pair 품질 진단
+
+관련 그림:
+  analyze/tsne_2x2_raw_vs_sub.png        (t-SNE, BG level)
+  analyze/sat_sim_distribution.png       (BG-level sat sim 분포)
+  analyze/region_sat_sim_distribution.png (region-level sat_mean sim 분포)
+
+================================================================================
+1. BG-level sat_sim (city-mean subtracted)
+================================================================================
+
+            >0.3    >0.4    >0.5
+NYC↔Seoul   22.2%   14.7%    8.7%
+NYC within  26.6%   20.4%   15.2%
+Seoul within 26.4%  19.4%   13.1%
+
+================================================================================
+2. Region-level sat_mean sim (city-mean subtracted)
+================================================================================
+
+            >0.3    >0.4    >0.5    std
+NYC↔Seoul   22.5%   14.9%    8.6%   0.344
+NYC within  30.6%   23.9%   17.7%   0.445
+Seoul within 28.8%  21.9%   15.8%   0.431
+
+================================================================================
+3. 핵심 발견
+================================================================================
+
+(1) within-city 분포가 cross-city 분포보다 오른쪽으로 치우쳐 있음
+    std: within 0.44 > cross 0.34
+    → within-city 내부에 도심/외곽/산업지구 등 다양한 지역이 공존해서
+      분포가 더 넓음. threshold=0.4에서 within 쌍이 cross 쌍보다 더 많이 선택됨.
+
+(2) 어떤 threshold를 잡아도 within/cross 구분이 통계적으로 불가능
+    두 분포가 거의 완전히 겹쳐 있음.
+    city-mean subtraction 후에도 sat_sim은 "기능적 동등성"이 아니라
+    "외관 유사도"를 측정하고 있음.
+
+(3) CrossCitySharedLoss의 gradient가 모순적
+    full in-batch denominator 구성:
+      - cross-city positive (sim=0.45): 가깝게 당김
+      - within-city negative (sim=0.50): 밀어냄
+    외관 유사도 기준 negative가 positive보다 더 비슷한 경우가 24%.
+    → "NYC 도심 ↔ Seoul 도심을 가깝게"를 학습하면서
+      "NYC 도심 ↔ NYC 미드타운을 멀게"라는 모순된 신호 동시 발생.
+    → within-NYC 다양성 붕괴 (within-nyc sim: 0.177 → 0.350) 설명됨.
+
+================================================================================
+4. CrossCitySharedLoss의 근본적 한계
+================================================================================
+
+sat_sim 기반 positive mining은 "위성 외관이 비슷하면 기능도 비슷하다"는
+가정에 의존. 하지만 city-mean subtraction 후에는:
+  - 분포 중심이 0으로 이동 → 모든 쌍이 유사도 0 근방
+  - 분포 분산이 크고 within/cross 분포가 겹침 → threshold로 구분 불가
+  - within-city 다양성(도심/주거/산업)이 cross-city 유사도보다 오히려 큼
+
+결론: CrossCitySharedLoss의 positive mining 기준(sat_sim threshold)이
+유효하지 않음. 이 loss가 수렴해도 학습하는 것이 "기능적 cross-city 구조"가
+아닐 가능성이 높음.
+
+================================================================================
+5. 해결 방향 (토론 중)
+================================================================================
+
+Option A. CrossCitySharedLoss 비활성화 (use_cross_city=false)
+  CLIPSharedCon + VICReg만으로 학습.
+  CLIPSharedCon의 diagonal pair (sat-poi 같은 지역)는 노이즈 없는 supervision.
+  장점: 모순된 gradient 제거, within-city 다양성 회복.
+  단점: cross-city alignment signal 완전 제거.
+
+Option B. CrossCitySharedLoss denominator를 cross-city 쌍만으로 제한
+  within-city 쌍을 denominator에서 제외.
+  → 모순된 gradient(within-city negative vs cross-city positive) 제거.
+  단점: within-city repulsion이 없어지므로 city-domain clustering 가능성.
+
+Option C. lambda_cross_city 대폭 감소 (0.1 → 0.01~0.02)
+  CrossCitySharedLoss를 매우 약한 soft constraint로만 사용.
+  주된 학습은 CLIPSharedCon + VICReg.
+
+Option D. POI land use 기반 positive mining 대체
+  sat_sim 대신 POI 카테고리 분포 유사도로 positive 판별.
+  하지만 POI 공간 자체가 city-specific (t-SNE에서 확인).
+  city-mean subtraction 후에도 여전히 분리 → 동일 문제 재발 가능.
+
+현재 권장: Option A 또는 Option C로 sep_agg_5 실험 후 비교.

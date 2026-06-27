@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+data/
+embeddings/
+experiments/
+checkpoints/
+logs/
+cache/
+*.pt
+*.npy
+*.log
+.DS_Store

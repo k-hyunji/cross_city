@@ -1,0 +1,84 @@
+날짜: 2026-05-07
+주제: 도시별 POI t-SNE 분석 + Option A/B 비교 정리
+
+관련 그림:
+  analyze/tsne_percity_poi.png     (도시별 POI t-SNE: type / entropy / density)
+  analyze/tsne_city_separation.png (전체 도시 분리 시각화)
+
+================================================================================
+1. 도시별 POI t-SNE 결과 (tsne_percity_poi.png)
+================================================================================
+
+[NYC]
+  dominant type: Type 0/1/2가 S자 매니폴드 형태로 분포. 비교적 혼합적.
+  type entropy: 중간~높은 entropy 많음 → 혼합 용도 지역(mixed-use) 多
+  POI density: 밀도 gradient가 매니폴드 구조와 어느 정도 대응
+
+[Seoul]
+  dominant type: 세 타입이 가장 뚜렷하게 클러스터로 분리됨
+  type entropy: 대부분 낮은 entropy (보라색) → 단일 type 지배적
+                특정 클러스터에만 고entropy 집중 → 전형적 단일용도 지역구조
+  POI density: 비교적 균일
+
+[Singapore]
+  dominant type: Type 0이 60% 지배. 가늘고 긴 매니폴드 형태.
+  type entropy: Seoul과 유사하게 낮은 entropy 多
+
+[공통 패턴]
+  - 세 도시 모두 Type 0/1/2 클러스터 구조가 도시 내부에서 의미 있음
+  - 그러나 매니폴드 형태(NYC: S자, Seoul: 덩어리, Singapore: 가는 선)가 도시마다 다름
+  - 이 형태 차이 때문에 도시를 합쳤을 때 같은 type끼리 겹치지 않음
+  - city-mean subtraction은 평균(위치)만 제거하고 형태(shape of manifold)는 유지
+    → POI space에서의 city bias가 단순 mean subtraction으로 해소되지 않는 근본 원인
+
+================================================================================
+2. 분석 요약: CrossCitySharedLoss 재검토
+================================================================================
+
+analyze_11.txt 에서 확인:
+  sat_sim threshold=0.4 기준:
+    NYC within-city  >0.4: 23.9%
+    Seoul within-city >0.4: 21.9%
+    NYC↔Seoul cross  >0.4: 14.9%
+
+  → within-city 쌍이 cross-city positive보다 더 높은 sat_sim을 가짐
+  → full in-batch denominator 사용 시 모순된 gradient 발생
+  → within-NYC sim 붕괴 (0.177 → 0.350), R² -0.051 → -0.333
+
+================================================================================
+3. Option A vs Option B
+================================================================================
+
+Option A — CrossCitySharedLoss 완전 비활성화 (use_cross_city=false)
+  구성: CLIPSharedCon + VICReg
+  장점:
+    - 모순된 gradient 완전 제거
+    - within-city diversity 회복 기대 (within-NYC sim 0.177 수준으로)
+    - 구현 단순 (config 변경만)
+  단점:
+    - cross-city alignment signal 전혀 없음
+    - Singapore transfer 시 cross-city 구조 부재로 불리할 수 있음
+
+Option B — denominator를 cross-city 쌍만으로 제한
+  구성: CLIPSharedCon + CrossCitySharedLoss(denom=cross_city) + VICReg
+  장점:
+    - cross-city alignment signal 유지
+    - within-city 쌍에 대한 모순 gradient 제거
+    - within-city repulsion은 VICReg에 위임
+  단점:
+    - sat_sim 기반 positive mining의 노이즈는 여전히 존재
+    - within-city repulsion이 없어 city-domain clustering 가능성 잔존
+    - 구현 변경 필요 (CrossCitySharedLoss denom_mode 추가)
+
+================================================================================
+4. 현재 상태 (결정 대기)
+================================================================================
+
+실험 결과 비교 (최종):
+  실험                          | NYC↔Seoul | w-nyc | w-seoul | sel_nstd | wc_std | K3ARI | R²
+  ------------------------------------------------------------------------------------------------
+  CLIPRegionCon                 |   -0.449  | 0.721 |  0.146  |  0.0268  | 0.560  | 0.943 | -0.07
+  sep_agg v3 +VICReg            |   +0.130  | 0.177 |  0.132  |  0.0210  | 0.879  | 0.059 | -0.051  ← 최고
+  sep_agg v4 (cc_thresh=0.4)    |   +0.006  | 0.350 |  0.156  |  0.0330  | 0.873  | 0.016 | -0.333
+
+Option A 또는 B 결정 후 sep_agg_5 실험 예정.

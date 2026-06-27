@@ -1,0 +1,81 @@
+날짜: 2026-05-06
+주제: CrossCitySharedLoss 미수렴 원인 진단
+
+================================================================================
+1. 진단 결과
+================================================================================
+
+학습된 모델(epoch_053_best.pt, sep_agg_3)에서 실제 cross-city similarity 측정.
+샘플: NYC 100개 × Seoul 100개 region
+
+--- 학습된 모델의 cross-city similarity 분포 ---
+poi_shared_region sim:  mean=-0.021  std=0.201
+sat_mean sim:           mean=0.004   std=0.341
+combined score:         mean=0.198   std=0.208
+
+--- combined > threshold 비율 (positive 조건) ---
+combined > 0.0: 79.9%  (~204쌍/배치)
+combined > 0.1: 65.3%  (~167쌍/배치)
+combined > 0.2: 49.6%  (~126쌍/배치)  ← 현재 설정
+combined > 0.3: 33.6%  (~85쌍/배치)
+combined > 0.4: 18.8%  (~48쌍/배치)
+combined > 0.5:  8.1%  (~20쌍/배치)
+
+sat_mean sim 전체 분포 (city-mean-subtracted, 984,912 pairs):
+  mean=0.009  std=0.344  min=-0.936  max=0.947
+  > 0.2: 31.1% / > 0.3: 22.5% / > 0.4: 14.9% / > 0.5: 8.6%
+
+================================================================================
+2. 미수렴 원인
+================================================================================
+
+현재 배치(16 NYC × 16 Seoul = 256쌍) 중 126쌍(49.6%)이 positive.
+InfoNCE 분자(126쌍) ≈ 분모(31쌍, 배치 전체)인 상태에서
+loss가 사실상 상수처럼 고정 → gradient 신호 거의 없음.
+
+근본 원인: poi_sim_norm이 모든 쌍에 대해 상수에 가까움.
+  poi_shared_region sim mean ≈ -0.021
+  poi_sim_norm = (-0.021+1)/2 ≈ 0.49 (랜덤 수준, 의미 없는 신호)
+  poi 기여분 = 0.4 × 0.49 ≈ 0.196 (상수)
+
+결과: combined ≈ 0.6×sat_sim + 0.196
+  threshold=0.2 → sat_sim > 0.007이면 모두 positive → 50% 선택
+
+poi_shared_region이 cross-city 기능적 유사도를 아직 학습하지 못한 상태에서
+combined mining은 sat_sim 기반 + 상수 오프셋에 불과.
+
+================================================================================
+3. 해결 방향
+================================================================================
+
+CrossCitySharedLoss에서 poi_sim 항 제거, sat_mean만으로 threshold 재설정.
+poi_shared_region이 random 수준인 이상 combined mining = sat_sim + 상수이므로
+노이즈만 추가하는 상황.
+
+권장 설정: sat_threshold=0.4 (positive rate ~15%, 배치 ~38쌍)
+  → contrastive learning에서 일반적으로 의미 있는 positive rate: 10~15%
+  → CLIPSharedCon의 align_threshold=0.5(8.6%)보다 약간 관대한 수준
+
+================================================================================
+4. 현재 전체 미해결 문제 목록
+================================================================================
+
+(1) CrossCitySharedLoss 미수렴
+    val_cross_city: 3.04로 수렴 안 됨
+    원인: poi_sim 항이 상수로 작용 → positive pair 50% 과다선택
+    해결: poi_sim 제거, sat_threshold=0.4로 재설정
+
+(2) FunctionalPrototypeLoss 미수렴
+    val_proto: 2.63 (기준 log(16)=2.77 대비 미미한 감소)
+    원인: city-biased input feature → 프로토타입이 기능적 archetype 대신
+          도시 하위 클러스터를 학습 / city-mean subtraction으로 완화됐지만
+          여전히 K=16 클러스터가 도시 내 패턴에 집중
+    해결 방향: 별도 진단 필요
+
+(3) Seoul norm_std 여전히 낮음
+    0.021 (목표 >0.05, CLIPRegionCon 기준 0.027)
+    VICReg으로 개선됐지만 완전 해소 안 됨
+    → CrossCitySharedLoss, CLIPSharedCon 조정 후 재평가
+
+(4) val_cross_city, val_proto 미수렴으로 인한 R² 한계
+    현재 최고 R²=-0.051. 위 문제들이 해소되면 추가 개선 가능성 있음.

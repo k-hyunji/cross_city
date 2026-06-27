@@ -1,0 +1,248 @@
+================================================================================
+Analysis 1 — Raw Feature Distribution & Pseudo-Positive Mining Diagnosis
+Date: 2026-05-01
+================================================================================
+
+--------------------------------------------------------------------------------
+1. Raw Feature t-SNE (region-level mean, before training)
+--------------------------------------------------------------------------------
+
+figures/tsne_raw_features.png 참고.
+
+[Raw Satellite Embeddings]
+- NYC(파랑): 넓게 퍼져 있고 여러 sub-cluster 형성
+- Seoul(주황): 오른쪽 위에 별도 덩어리, NYC와 부분적 분리
+- Singapore(초록): 오른쪽 아래에 별도 덩어리
+- 도시 간 일부 겹침 존재 → 완전 분리는 아님
+
+[Raw POI Embeddings]
+- Seoul(주황): 오른쪽 아래에 극도로 tight한 단일 클러스터 — NYC와 전혀 겹치지 않음
+- Singapore(초록): 별도 클러스터, NYC와 완전 분리
+- NYC(파랑): 넓게 퍼져 있음
+- 세 도시 모두 POI 공간에서 완전히 분리됨
+
+→ POI 원본 특성은 도시별로 아예 다른 분포 공간에 위치.
+  satellite은 부분적 겹침 있으나 POI는 겹침 없음.
+
+--------------------------------------------------------------------------------
+2. Cross-city Similarity 분포 정량 분석
+--------------------------------------------------------------------------------
+
+[Raw POI cross-city sim (NYC ↔ Seoul, 984,912 pairs)]
+  mean : 0.092
+  std  : 0.028
+  max  : 0.271
+  > 0.5: 0 / 984,912 쌍
+
+→ raw POI 기준으로 NYC↔Seoul 간 cosine similarity가 0.5를 넘는 pair가 단 하나도 없음.
+  한국과 미국의 POI 카테고리 체계 및 분포 자체가 근본적으로 다른 공간에 위치.
+
+[Learned POI cross-city sim (Fix2+4+8 corrected embeddings, 984,912 pairs)]
+  mean : 0.626
+  std  : 0.227
+  max  : 0.988
+  > 0.5: 744,272 / 984,912 쌍 (76%)
+
+→ 학습 후에는 76%가 0.5 초과 — 그러나 이것은 genuine functional similarity가 아닌
+  embedding collapse의 결과. 모든 embedding이 서로 가까워진 부산물.
+
+[Dual-signal mining hit rate (Fix2+4+8 corrected embeddings)]
+  sat_mean > 0.9 AND poi_region > 0.5: 95,345 / 984,912 쌍 (9.7%)
+
+→ 9.7%의 pair가 pseudo-positive로 선정되었으나,
+  이 중 poi_sim > 0.5 조건은 collapse로 인해 spurious하게 만족된 것.
+
+--------------------------------------------------------------------------------
+3. 근본 문제 진단
+--------------------------------------------------------------------------------
+
+Fix 4 dual-signal mining의 실제 동작 분석:
+
+  [학습 초기]
+    raw POI 자체가 도시별 완전 분리
+    → poi_sim > 0.5 만족 cross-city pair = 0개
+    → dual-signal 조건에서 사실상 sat_mean 단독 신호만 작동
+
+  [collapse 이후]
+    embedding collapse로 poi_sim이 전체적으로 높아짐
+    → 95,345쌍이 pseudo-positive로 선정
+    → 그러나 이는 기능적 유사성 기반이 아닌 collapse의 부산물
+    → spurious positives가 training signal을 오염
+
+Fix 8 FunctionalPrototypeLoss가 기능 클러스터를 만들지 못한 이유:
+  → collapse된 embedding에 Sinkhorn balanced assignment를 적용하면
+    prototype이 "기능 archetype (주거/상업/공업)"이 아닌
+    "collapsed 공간에서의 random 방향"을 학습하게 됨.
+  → prototype의 city-agnostic 가정이 성립하려면
+    먼저 embedding 자체가 기능 기반으로 구조화되어 있어야 함.
+
+--------------------------------------------------------------------------------
+4. CLIP-like (B×B) vs UnifiedCityCon (2B×2B) 비교 재해석
+--------------------------------------------------------------------------------
+
+이전 t-SNE 해석 수정:
+
+  Fix2+4+8 corrected (2B×2B):
+    Seoul이 NYC blob 안에 "섞여 보임" → cross-city alignment가 아닌 collapse
+    within-city sim: NYC 0.807, Seoul 0.722 (모두 다 비슷 → 구별 없음)
+    NYC↔Seoul mean sim 0.623 ≈ within-city sim → discriminative gap 없음
+    t-SNE에서 섞여 보이는 것 = 모든 embedding이 비슷해서 한 덩어리에 모인 것
+
+  CLIP-like (B×B):
+    within-city sim: NYC 0.721 (↓), Seoul 0.147 (↓↓)
+    but NYC↔Seoul centroid cos: -0.449 (도시 분리 재발)
+    within-modality negative 제거 → cross-city repulsion도 같이 제거됨
+    → 도시들이 다시 반대 반구로 분리
+
+  진짜 cross-city functional alignment의 기준:
+    t-SNE에서 기능적 sub-cluster가 도시 혼합으로 보여야 함
+    예: [NYC주거 + Seoul주거] 클러스터, [NYC상업 + Seoul상업] 클러스터 등
+    → 현재까지 어떤 방법으로도 이런 구조가 나타난 적 없음
+
+--------------------------------------------------------------------------------
+5. 전체 Run 결과 테이블 (2026-05-01 기준)
+--------------------------------------------------------------------------------
+
+Run                       | Loss                | R²(log) | NYC↔Seoul cos | W-NYC  | W-Seoul | Seoul norm std
+--------------------------|---------------------|---------|---------------|--------|---------|---------------
+Fix 0+1+thr+balanced      | L_contrast+L_align  | -0.31   | -0.397        | 0.568  | 0.352   | 0.124
+Fix 2 (UnifiedCityCon)    | L_unified           | -0.17   | +0.819        | 0.809  | 0.710   | 0.028
+Fix 2+4+8 bugged          | L_unified+L_proto   | -0.62   | -             | -      | -       | -
+Fix 2+4+8 corrected       | L_unified+L_proto   | -0.07   | +0.816        | 0.807  | 0.722   | 0.027
+CLIP-like (B×B)           | L_clip+L_proto      | -0.11   | -0.449        | 0.721  | 0.147   | 0.027
+
+--------------------------------------------------------------------------------
+6. 결론 및 다음 단계
+--------------------------------------------------------------------------------
+
+[즉각 시도]
+  poi_threshold: 0.0 으로 변경 (또는 sat_mean 단독 신호 사용)
+  근거: raw POI 자체가 도시별 완전 분리 공간 → poi_sim은 신뢰할 수 없는 신호
+        sat_mean은 부분적 cross-city 겹침 존재 → 더 나은 proxy
+
+[중기 방향]
+  POI를 cross-city alignment 신호로 사용하는 것 자체를 재고해야 함.
+  POI는 within-city 기능 구분에는 유효하나 cross-city mining 신호로는 부적합.
+  Satellite (시각적 형태 기반)이 실제로 더 나은 cross-city alignment 신호.
+
+[추가 확인 필요]
+  sat_mean 단독 (poi_threshold 제거) 후 pseudo-positive hit rate 및
+  prototype assignment 분포 확인 → prototype이 도시 간 혼합되는지 체크.
+
+[핵심 교훈]
+  Loss 설계보다 data 분포 이해가 선행되어야 함.
+  두 도시의 POI 특성 공간이 근본적으로 다른 상황에서
+  POI similarity 기반 cross-city alignment는 작동할 수 없음.
+
+================================================================================
+
+
+================================================================================
+Analysis 1 추가 — Raw Feature K-means Clustering 분석
+Date: 2026-05-01
+================================================================================
+
+--------------------------------------------------------------------------------
+7. K-means Clustering 결과 (Raw Features, region-level mean)
+--------------------------------------------------------------------------------
+
+평가 지표:
+  ARI  (Adjusted Rand Index): 클러스터가 도시 레이블과 얼마나 일치하는가 (1.0 = 완전 일치)
+  NMI  (Normalized Mutual Info): 클러스터와 도시 레이블 간 정보 공유량
+  AvgCityPurity: 각 클러스터에서 지배적인 도시의 비율 평균 (1.0 = 모든 클러스터가 단일 도시)
+
+[Raw Satellite]
+
+  K= 3 | ARI=0.866  NMI=0.832  AvgCityPurity=0.929
+    Cluster 0 (n= 541): NYC  21%  Seoul  79%  SG   0%
+    Cluster 1 (n= 342): NYC   0%  Seoul   0%  SG 100%
+    Cluster 2 (n=2201): NYC 100%  Seoul   0%  SG   0%
+
+  K= 8 | ARI=0.227  NMI=0.543  AvgCityPurity=0.999
+  K=16 | ARI=0.115  NMI=0.433  AvgCityPurity=0.999
+  K=32 | ARI=0.058  NMI=0.363  AvgCityPurity=0.999
+
+[Raw POI]
+
+  K= 3 | ARI=0.943  NMI=0.870  AvgCityPurity=0.952
+    Cluster 0 (n= 496): NYC   7%  Seoul  86%  SG   7%
+    Cluster 1 (n=2281): NYC 100%  Seoul   0%  SG   0%
+    Cluster 2 (n= 307): NYC   0%  Seoul   0%  SG 100%
+
+  K= 8 | ARI=0.249  NMI=0.533  AvgCityPurity=0.932
+  K=16 | ARI=0.133  NMI=0.439  AvgCityPurity=0.974
+  K=32 | ARI=0.060  NMI=0.361  AvgCityPurity=0.988
+
+--------------------------------------------------------------------------------
+8. 해석
+--------------------------------------------------------------------------------
+
+[K=3 결과 — 도시가 거의 완벽하게 분리됨]
+
+  Satellite ARI=0.866: K-means 3개 클러스터가 3개 도시를 87% 정확도로 복원.
+    NYC는 단독 클러스터(100%), Singapore는 단독(100%),
+    Seoul은 일부 NYC와 겹치는 클러스터에 79% 농도로 존재.
+
+  POI ARI=0.943: satellite보다 더 강한 도시 분리.
+    NYC 100%, Singapore 100%, Seoul 86% — 세 도시가 거의 완벽하게 분리.
+
+  → 원본 feature 공간에서 도시 구분은 기능 구분보다 훨씬 강한 신호.
+    K-means 3개만으로 도시를 거의 식별 가능 = 데이터 자체가 도시별로 구조화됨.
+
+[K=8, 16, 32 결과 — sub-cluster 수준에서도 100% city-pure]
+
+  K를 늘려도 AvgCityPurity가 0.999 수준 유지.
+  이는 within-city functional sub-cluster가 생겨도 그 sub-cluster들이
+  전부 단일 도시 소속임을 의미함.
+
+  K=16 (현재 prototype 수)에서도 AvgCityPurity=0.999 (satellite) / 0.974 (POI).
+  → FunctionalPrototypeLoss의 16개 prototype이 도시 간 혼합 클러스터를
+    만들 수 없는 것이 data 수준에서 예측 가능한 결과였음.
+
+[ARI 감소 패턴 해석]
+
+  K 증가 시 ARI가 감소하는 것은 클러스터 수가 도시 수(3)를 넘으면서
+  각 도시가 여러 sub-cluster로 분할되어 city 레이블과의 1:1 대응이 깨지기 때문.
+  purity는 여전히 높음 = sub-cluster들은 city-pure, 단지 한 도시가 여러 클러스터로 쪼개짐.
+
+--------------------------------------------------------------------------------
+9. 전체 분석의 핵심 결론
+--------------------------------------------------------------------------------
+
+  (1) Raw feature space 자체가 도시별로 강하게 분리되어 있음.
+      Satellite: ARI=0.866, POI: ARI=0.943 (K=3 기준)
+
+  (2) 모든 K에서 sub-cluster가 100% city-pure.
+      → 어떤 K-means도 도시 간 혼합 기능 클러스터를 발견하지 못함.
+      → 원본 데이터에 cross-city functional structure가 없거나 매우 약함.
+
+  (3) 현재 학습 파이프라인이 계속 city-domain cluster를 만드는 것은
+      loss 설계의 실패가 아니라 데이터 분포의 반영.
+      모델은 데이터가 제공하는 가장 강한 신호(도시 구분)를 학습하고 있음.
+
+  (4) FunctionalPrototypeLoss (K=16 prototype)이 기능 클러스터를 만들지 못하는 것은
+      K=16 K-means 자체가 raw feature에서 city-pure 클러스터만 만드는 것과 일치.
+      prototype이 기능 archetype을 학습하려면 데이터 전처리 또는
+      feature 자체의 city-agnostic 변환이 선행되어야 함.
+
+  (5) poi_threshold=0.5 dual-signal mining은 raw POI sim max=0.271로 인해
+      학습 초기에 pseudo-positive pair를 0개 선정 — 원천적으로 무효.
+
+--------------------------------------------------------------------------------
+10. 다음 방향 (데이터 분포 분석 기반)
+--------------------------------------------------------------------------------
+
+  [단기] poi_threshold 제거 → sat_mean 단독 신호로 pseudo-positive mining
+         근거: POI cross-city sim이 raw 기준 0.271 상한, 0.5 이상 = 0쌍
+
+  [중기] raw feature의 city-specific 성분 제거 방안 검토
+         - city-mean subtraction (각 도시 평균을 빼서 within-city deviation만 사용)
+         - Domain-adversarial feature normalization
+         - 도시별 feature 분포를 align한 후 학습
+
+  [본질적 질문] 현재 satellite / POI feature extractor 자체가
+               city-agnostic 표현을 학습한 것인가?
+               → pre-trained feature가 이미 city-specific bias를 가지고 있다면
+                 downstream contrastive loss로는 이를 극복하기 어려움.
+
+================================================================================

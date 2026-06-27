@@ -1,0 +1,56 @@
+satellite_mode: "npy"
+
+data:
+  data_root: "data"
+  poi_dim: 64
+  sat_dim: 64
+
+model:
+  aggregator: "attention"
+  aggregator_heads: 4
+  use_sep_agg: true
+  use_adv: false
+  n_cities: 2
+
+training:
+  epochs: 100
+  batch_size: 32
+  lr: 0.0001
+  weight_decay: 0.0001
+  balanced_sampler: true
+
+  use_clip:         false
+  use_unified_con:  false
+  use_clip_shared:  true
+  use_cross_city:   false    # Option A: CrossCitySharedLoss 완전 비활성화
+  use_proto:        true
+  use_vicreg:       true
+
+  lambda_contrast:  1.0
+  lambda_dis:       0.3
+  lambda_align:     0.0
+  lambda_proto:     0.5
+  lambda_cross_city: 0.0    # 비활성화에 맞춰 0으로
+  lambda_adv:       0.1
+  lambda_vicreg:    1.0
+  vicreg_gamma:     1.0
+
+  contrast_temp:    0.07
+  cross_city_temp:  0.1
+  cross_city_sat_threshold: 0.4
+
+  align_threshold:  0.5
+  poi_threshold:    0.0
+  align_temp:       0.1
+
+  n_prototypes:     16
+  proto_temp:       0.1
+  sinkhorn_iters:   3
+
+eval:
+  metrics: ["MAE", "RMSE", "R2"]
+
+logging:
+  log_dir: "checkpoints/nyc_seoul_sep_agg_5/logs"
+  checkpoint_dir: "checkpoints/nyc_seoul_sep_agg_5/checkpoints"
+  save_every: 10

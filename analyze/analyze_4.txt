@@ -1,0 +1,174 @@
+Date: 2026-05-06
+Run: nyc_seoul_sep_agg
+Config: configs/base.yaml (use_sep_agg=true, use_clip_shared=true, use_cross_city=true, use_proto=true)
+Embeddings: embeddings/nyc_seoul_sep_agg/
+
+================================================================================
+1. ARCHITECTURE CHANGES FROM PREVIOUS RUN
+================================================================================
+
+Previous (nyc_seoul_clip_0506): 2 aggregators (sat_agg[64], poi_agg[64])
+  - CLIPRegionCon on sat_region[64] × poi_region[64]
+  - Gradient leaked into spec branch
+
+New (nyc_seoul_sep_agg): 4 aggregators (sat_shared_agg[32], sat_spec_agg[32],
+                                          poi_shared_agg[32], poi_spec_agg[32])
+  - shared_fusion MLP: cat([sat_shared_region, poi_shared_region])[64] → region_shared[32]
+  - CLIPSharedCon on sat_shared_region[32] × poi_shared_region[32]
+  - CrossCitySharedLoss on region_shared[32] with soft combined mining
+    (sat_weight=0.6, poi_weight=0.4, min_threshold=0.2)
+  - BGDisLoss on BG-level spec⊥shared (lambda=0.3)
+  - FunctionalPrototypeLoss on region_emb[128] (lambda=0.3)
+
+Config diff:
+  lambda_contrast:    1.0  (CLIPSharedCon)
+  lambda_dis:         0.3  (raised from 0.1)
+  lambda_proto:       0.3
+  lambda_cross_city:  0.5  (new)
+
+================================================================================
+2. TRAINING LOSS CURVES (val)
+================================================================================
+
+Ep  | val_total | val_contrast | val_cross_city | val_dis | val_proto
+----------------------------------------------------------------------
+  1 |    5.4063 |       2.9167 |         3.2600 |  0.1462 |    2.7500
+ 11 |    5.2904 |       2.7998 |         3.3323 |  0.0143 |    2.7248
+ 21 |    5.2031 |       2.7495 |         3.2730 |  0.0087 |    2.7086
+ 31 |    5.1105 |       2.6856 |         3.2228 |  0.0063 |    2.7004
+ 41 |    5.0934 |       2.6702 |         3.2231 |  0.0049 |    2.6969
+ 51 |    5.0430 |       2.6448 |         3.1747 |  0.0040 |    2.6958
+ 61 |    5.0251 |       2.6409 |         3.1463 |  0.0033 |    2.6975
+ 71 |    5.0126 |       2.6285 |         3.1511 |  0.0030 |    2.6898
+ 81 |    4.9966 |       2.6253 |         3.1242 |  0.0027 |    2.6925
+ 91 |    4.9918 |       2.6234 |         3.1185 |  0.0026 |    2.6923
+100 |    4.9926 |       2.6245 |         3.1180 |  0.0026 |    2.6923
+
+Best: val_total=4.9869 @ ep85
+
+Observations:
+- val_contrast: 2.92 → 2.62 (Δ=0.30 over 100ep) — slow but steady
+- val_cross_city: 3.26 → 3.12 — nearly flat, effectively not converging
+  Target for good alignment: ~1.0–2.0
+- val_proto: 2.75 → 2.69 — barely moved (baseline log(16)=2.77)
+  Prototypes are not learning functional structure
+- train_dis: 0.146 → 0.003 — BG-level spec⊥shared achieved quickly
+
+================================================================================
+3. EMBEDDING GEOMETRY
+================================================================================
+
+--- Centroid cosine similarity (normalized embeddings) ---
+
+                        CLIPRegionCon (prev)    sep_agg (new)    Target
+NYC  ↔ Seoul            -0.449                  +0.832           +0.3~+0.6
+NYC  ↔ Singapore        +0.245                  +0.860           —
+Seoul ↔ Singapore       -0.134                  +0.862           —
+
+City-domain clustering RESOLVED (all positive), but over-alignment occurred.
+Cross-city centroid cos ~0.83–0.86 is too high.
+
+--- Within-city average pairwise cosine similarity ---
+
+                        CLIPRegionCon (prev)    sep_agg (new)    Target
+NYC                     0.721                   0.674            0.3–0.6
+Seoul                   0.147                   0.652            0.3–0.6
+Singapore               0.803                   0.554            —
+
+Seoul within-city sim rose dramatically (0.147 → 0.652) — over-alignment.
+
+--- Embedding norm statistics ---
+
+                        mean        std         range
+NYC                     10.160      1.283       [0.796, 10.380]
+Seoul                   10.304      0.013       [10.266, 10.330]  ← collapse
+Singapore               9.764       2.236       —
+
+Seoul norm std = 0.013 is a collapse signal. NYC has wide range (0.8–10.4)
+because some BGs have no satellite coverage (near-zero norms). Seoul's uniform
+norms suggest shared_fusion MLP converges to similar magnitudes for all Seoul
+regions under strong alignment pressure.
+
+Seoul pairwise cosine: mean=0.652, std=0.176, min=0.029, max=0.993
+→ Directional diversity survives (std=0.176), but norm uniformity indicates
+the representational space is being compressed.
+
+--- Batch-level similarity (sample of 16 NYC + 16 Seoul) ---
+
+NYC  ↔ NYC  avg: 0.342
+Seoul ↔ Seoul avg: 0.309
+NYC  ↔ Seoul avg: 0.536  ← cross-city > within-city = over-alignment
+
+================================================================================
+4. K-MEANS ANALYSIS
+================================================================================
+
+K=3 ARI (city recovery):  0.0078   (raw features: sat=0.866, poi=0.943)
+→ K-means cannot recover city labels at all. Cities are spatially mixed.
+→ Combined with centroid cos ~0.83, this means all embeddings are pulled
+  toward a global mean regardless of city — over-alignment, not functional mixing.
+
+K=16 avg city purity:  0.9594   (raw features: 0.999)
+→ Modest improvement from 0.999 → 0.959. Clusters are still mostly city-pure.
+→ Cross-city functional clusters not achieved (would require purity ~0.5–0.7).
+
+================================================================================
+5. LINEAR PROBE (nyc + seoul → singapore)
+================================================================================
+
+                        CLIPRegionCon (prev)    sep_agg (new)
+R² (log-space)          -0.07                   -1.31
+
+Worse than previous by a large margin.
+
+Root cause: over-alignment in the learned embedding space. When all NYC and Seoul
+embeddings are pulled toward the same global mean (centroid cos = 0.83), the
+linear probe learns a hyperplane that works for both source cities but cannot
+generalize to Singapore's functional structure. Singapore within-city sim = 0.554
+is lower than NYC/Seoul (0.65–0.67), meaning Singapore has more diverse functional
+patterns — but the source embedding collapse prevents the probe from capturing this.
+
+================================================================================
+6. ROOT CAUSE DIAGNOSIS
+================================================================================
+
+Primary cause: CrossCitySharedLoss (lambda=0.5) is too strong.
+
+CLIPSharedCon (lambda=1.0) + CrossCitySharedLoss (lambda=0.5) together apply
+1.5× total alignment pressure on the 32-d shared branch. The counterbalancing
+forces — BGDisLoss (lambda=0.3, BG-level only) and FunctionalPrototypeLoss
+(lambda=0.3, region_emb level) — are insufficient.
+
+Secondary: val_cross_city stuck at 3.12 despite lambda=0.5.
+Soft mining with min_threshold=0.2 and sat_weight=0.6 may not be finding
+sufficient meaningful positive pairs, or the loss is dominated by the
+denominator (all B regions) becoming harder to separate as alignment progresses.
+
+BGDisLoss collapse to 0.003 is NOT a failure — BG-level orthogonality is
+achieved. The problem is upstream: the shared branch itself is over-aligned,
+so even with spec⊥shared, the full region_emb is dominated by the aligned signal.
+
+================================================================================
+7. FIXES FOR NEXT RUN (nyc_seoul_sep_agg_v2)
+================================================================================
+
+Config changes:
+  lambda_cross_city: 0.5 → 0.1   # primary fix — 5× reduction
+  lambda_proto:      0.3 → 0.5   # stronger diversity pressure on region_emb
+
+Rationale:
+- lambda_cross_city=0.1 reduces cross-city alignment pressure to 10% of
+  CLIPSharedCon (lambda=1.0), preventing over-alignment while keeping the
+  functional alignment signal active.
+- lambda_proto=0.5 strengthens prototype-based diversity. FunctionalPrototypeLoss
+  acts on region_emb[128] (all branches), providing a diversifying force that
+  competes with the alignment losses.
+
+If over-alignment persists: add VICReg variance term to explicitly maintain
+embedding variance per dimension, preventing collapse to a global mean.
+
+Expected outcome:
+- NYC↔Seoul centroid cos: +0.3~+0.5 (was +0.83)
+- within-city sim: 0.3–0.6 (was 0.65–0.67)
+- Seoul norm std: >0.05 (was 0.013)
+- Linear probe R²: > -0.07 (previous best)

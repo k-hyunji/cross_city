@@ -1,0 +1,209 @@
+================================================================================
+Analysis 2 — Raw Feature Overlap 분석 & 도시별 Within-City Clustering
+Date: 2026-05-01
+================================================================================
+
+--------------------------------------------------------------------------------
+1. Cross-city K=3 겹치는 영역 분석 (Overlap Analysis)
+--------------------------------------------------------------------------------
+
+[Satellite K=3 Mixed Cluster]
+  클러스터 구성: NYC=115 / Seoul=426 / SG=0  (총 n=541)
+  → Seoul 전체(426개)가 이 하나의 mixed cluster에 포함됨.
+    서울 지역 중 다른 cluster에 있는 것이 없음 — 서울 전체가 NYC의 일부와 겹침.
+
+  Pop density 비교:
+    NYC-in-mixed  (서울과 겹친 NYC 115개): mean=22,163  std=11,050
+    NYC-pure      (나머지 NYC 2,197개)   : mean=16,601
+    → 서울과 겹치는 NYC 지역은 NYC 평균(16,712)보다 밀도가 높음 (+33%)
+    → 서울처럼 보이는 NYC 지역 = 고밀도 지역
+
+  NYC-in-mixed vs NYC-pure 차이가 큰 satellite 차원:
+    dim [24, 6, 39, 7, 8] — 차이값: [0.147, 0.118, 0.116, 0.106, 0.091]
+
+[POI K=3 Mixed Cluster]
+  클러스터 구성: NYC=35 / Seoul=426 / SG=35  (총 n=496)
+  → 마찬가지로 Seoul 전체가 단일 mixed cluster에 포함.
+    NYC 35개, Singapore 35개가 Seoul 공간과 겹침.
+
+  Pop density 비교:
+    NYC-in-mixed  (서울과 겹친 NYC 35개) : mean=20,231  std=12,244
+    NYC-pure      (나머지 NYC 2,277개)  : mean=16,926
+    → 역시 고밀도 NYC 지역이 Seoul POI 공간과 겹침
+
+  NYC-in-mixed vs NYC-pure 차이가 큰 POI 차원:
+    dim [31, 28, 22, 52, 55] — 차이값: [0.189, 0.188, 0.168, 0.165, 0.162]
+
+[해석]
+  서울과 겹치는 NYC 지역의 공통점: 고밀도 (22,000+ 명/km²)
+  서울 평균 밀도(22,776 명/km²)와 비슷한 NYC 지역만 satellite/POI 공간에서 겹침.
+  즉, cross-city overlap은 "밀도가 높은 도시 형태"가 공통 축으로 작용하는 부분.
+
+  Singapore는 POI에서 일부(35개) Seoul과 겹침 — 아시아 도시 간 POI 카테고리 유사성 가능성.
+
+  하지만 전체적으로 NYC의 5% (115/2312) 또는 1.5% (35/2312)만 겹침.
+  → cross-city overlap 자체가 매우 희소하며, 특정 고밀도 지역에만 국한됨.
+
+--------------------------------------------------------------------------------
+2. PCA 분산 설명 비율
+--------------------------------------------------------------------------------
+
+  [Satellite] 상위 5개 PC 설명 분산: [0.405, 0.186, 0.124, 0.096, 0.045]
+    → PC1이 40.5%, 5개 합산 85.6%
+    → 분산이 여러 축에 분산 — city-identity 이외에도 다양한 축 존재
+
+  [POI] 상위 5개 PC 설명 분산: [0.653, 0.200, 0.090, 0.028, 0.009]
+    → PC1 하나가 65.3% 설명 — 극도로 집중된 구조
+    → 5개 합산 98% — 사실상 5차원으로 압축 가능
+    → PC1이 city-identity axis일 가능성 매우 높음
+       (Seoul과 NYC가 완전히 다른 POI 공간에 있으므로)
+    → PC1을 제거(city-mean subtraction 등)하면 나머지 분산에서
+       within-city 기능 구조가 드러날 수 있음
+
+--------------------------------------------------------------------------------
+3. 도시별 Within-City Clustering 분석
+--------------------------------------------------------------------------------
+
+평가 지표:
+  Silhouette: 클러스터 내 응집도 vs 분리도 (-1~1, 높을수록 좋은 클러스터)
+  Davies-Bouldin: 클러스터 간 분리도 (낮을수록 좋음)
+  pop_density range: 클러스터 간 인구밀도 평균의 최대-최소 차이 (기능 구분 proxy)
+
+--- NYC (n=2,312) ---
+
+  [Satellite]
+    K=3: Silhouette=0.234  DB=1.370  pop range=4,765
+      Cluster 0 (n=1,296): pop mean=16,339  std=11,863
+      Cluster 1 (n=  244): pop mean=20,929  std=10,974
+      Cluster 2 (n=  772): pop mean=16,164  std= 7,063
+    K=5: Silhouette=0.216  DB=1.434  pop range=10,633
+    K=8: Silhouette=0.168  DB=1.588  pop range=10,844
+
+  [POI]
+    K=3: Silhouette=0.331  DB=0.997  pop range=583
+      Cluster 0 (n=1,048): pop mean=16,895  std= 9,980
+      Cluster 1 (n=  618): pop mean=16,359  std= 8,790
+      Cluster 2 (n=  646): pop mean=16,942  std=12,612
+    K=5: Silhouette=0.284  DB=1.043  pop range=14,332
+    K=8: Silhouette=0.214  DB=1.217  pop range=17,420
+
+  NYC 해석:
+    - Satellite K=3: 클러스터 간 pop density 차이가 작음(4,765) → satellite가 NYC 내
+      밀도 구분을 잘 포착하지 못함. Cluster 1만 약간 고밀도.
+    - POI K=3: pop range가 583으로 거의 없음 → NYC에서 POI K=3 클러스터는
+      밀도와 무관한 다른 기준으로 나뉨. K=8에서는 17,420으로 증가.
+    - Silhouette 0.23~0.33 수준 — 클러스터 경계가 약함.
+
+--- Seoul (n=426) ---
+
+  [Satellite]
+    K=3: Silhouette=0.190  DB=1.544  pop range=13,107
+      Cluster 0 (n=124): pop mean=23,362  std=10,001
+      Cluster 1 (n=182): pop mean=27,743  std= 9,124
+      Cluster 2 (n=120): pop mean=14,636  std=10,323
+    K=5: Silhouette=0.159  DB=1.719  pop range=18,527
+    K=8: Silhouette=0.144  DB=1.609  pop range=20,871
+
+  [POI]
+    K=3: Silhouette=0.300  DB=1.074  pop range=8,086
+      Cluster 0 (n= 79): pop mean=17,653  std=11,067
+      Cluster 1 (n=192): pop mean=22,492  std=10,396
+      Cluster 2 (n=155): pop mean=25,739  std=11,058
+    K=5: Silhouette=0.295  DB=1.007  pop range=12,991
+    K=8: Silhouette=0.255  DB=1.133  pop range=15,507
+
+  Seoul 해석:
+    - Satellite K=3: pop range=13,107 — 저밀도(14,636)~고밀도(27,743) 구분 가능.
+      satellite가 Seoul 내에서 밀도 기반 구조를 잘 포착함.
+    - POI K=3: 단조 증가 클러스터 (17,653 → 22,492 → 25,739) — 밀도 gradient 포착.
+      POI도 Seoul 내에서 기능적 구분에 유효.
+    - Silhouette은 낮지만 (0.19~0.30) pop density range가 의미 있게 큼.
+
+--- Singapore (n=346) ---
+
+  [Satellite]
+    K=3: Silhouette=0.255  DB=1.218  pop range=14,067
+      Cluster 0 (n=167): pop mean=16,923  std=12,104
+      Cluster 1 (n=176): pop mean= 8,322  std= 6,455
+      Cluster 2 (n=  3): pop mean= 2,856  std= 2,021
+    K=5: Silhouette=0.126  DB=1.807  pop range=13,405
+    K=8: Silhouette=0.159  DB=1.433  pop range=17,084
+
+  [POI]
+    K=3: Silhouette=0.394  DB=0.841  pop range=9,014
+      Cluster 0 (n= 95): pop mean=15,158  std=11,985
+      Cluster 1 (n= 55): pop mean= 6,144  std= 8,094
+      Cluster 2 (n=196): pop mean=12,865  std= 9,653
+    K=5: Silhouette=0.326  DB=0.874  pop range=17,704
+    K=8: Silhouette=0.283  DB=0.999  pop range=16,258
+
+  Singapore 해석:
+    - Satellite K=3: Cluster 2가 n=3 (이상치) — 불균형한 클러스터.
+      pop range=14,067으로 크지만 이상치 영향 가능성.
+    - POI K=3: Silhouette=0.394으로 세 도시 중 가장 높음 → Singapore POI가
+      within-city 클러스터 구조를 가장 잘 포착. low-density(6,144) vs
+      high-density(15,158) 구분 명확.
+
+--------------------------------------------------------------------------------
+4. 종합 해석
+--------------------------------------------------------------------------------
+
+[Satellite vs POI within-city 유용성 비교]
+
+  Silhouette 기준 POI가 satellite보다 일관되게 높음:
+    NYC  : POI 0.331 > Sat 0.234 (K=3)
+    Seoul: POI 0.300 > Sat 0.190 (K=3)
+    SG   : POI 0.394 > Sat 0.255 (K=3)
+
+  → POI가 within-city 기능 구분에 더 유효한 feature.
+    satellite은 시각적 형태(건물 밀집도, 도로 패턴)를 담지만
+    POI는 실제 토지이용 유형(상업/주거/공업)을 더 직접 반영함.
+
+[Pop density가 within-city clustering의 proxy로 적절한지]
+
+  Seoul K=8 Satellite: pop range=20,871 — 의미 있는 밀도 구분.
+  Singapore POI K=5:   pop range=17,704 — 의미 있는 밀도 구분.
+  NYC POI K=3:         pop range=583    — 밀도 구분 거의 없음.
+
+  → NYC는 satellite/POI 클러스터와 pop density의 상관이 낮음.
+    NYC의 pop density가 다른 도시보다 지역별 편차가 복잡하거나,
+    POI/satellite이 NYC 내 다른 축(예: 상업 집중도, 토지이용 유형)으로 나뉠 수 있음.
+
+[Cross-city overlap의 함의]
+
+  겹치는 지역 = NYC 고밀도 지역 (mean 22,163) ↔ Seoul 전체 (mean 22,776)
+  → cross-city functional similarity의 유일한 자연 발생 축 = 고밀도 도시 형태
+  → 저밀도/교외 지역의 cross-city alignment는 raw feature 수준에서 근거가 없음.
+  → pseudo-positive mining을 고밀도 지역에 집중하는 것이 더 합리적일 수 있음.
+
+[POI PC1 (65.3%) 함의]
+
+  POI 분산의 65%가 단 하나의 축(PC1)에 집중.
+  이 축이 city-identity axis일 경우 (NYC vs Seoul의 POI 체계 차이),
+  PC1을 제거한 잔여 분산(35%)에서 within-city 기능 구조를 추출할 수 있음.
+  → city-mean subtraction 또는 PC1 제거 후 재학습이 유망한 전처리 방향.
+
+--------------------------------------------------------------------------------
+5. 결론 및 다음 실험 제안
+--------------------------------------------------------------------------------
+
+  (1) within-city 클러스터링은 작동함 (silhouette 0.19~0.39).
+      하지만 클러스터 경계가 약하고 pop density와의 연계가 도시마다 다름.
+      POI가 satellite보다 within-city 기능 구분에 더 유효.
+
+  (2) cross-city overlap은 고밀도 지역에 국한됨.
+      저밀도 지역은 raw feature 수준에서 cross-city 대응 지역을 찾기 어려움.
+
+  (3) POI의 PC1이 65.3% 분산 담당 → 강한 단일 구조 (city-identity 축 추정).
+      city-mean subtraction 또는 PC1 제거 전처리로 city-specific 성분 제거 후
+      재분석이 필요함.
+
+  (4) 다음 우선 실험:
+      A) POI/Satellite에서 city-mean subtraction 후 K-means 재실행
+         → 도시 간 클러스터 혼합이 생기는지 확인
+      B) poi_threshold 제거 (sat_mean 단독 pseudo-positive) 후 재학습
+         → cross-city alignment가 개선되는지 확인
+      C) high-density region에만 pseudo-positive mining 적용하는 실험
+         → overlap이 확인된 고밀도 구간에서만 alignment 신호 사용
+
+================================================================================
